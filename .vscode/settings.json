@@ -1,6 +1,6 @@
 {
     "python.testing.pytestArgs": [
-        "."
+        "lab_5_scraper"
     ],
     "python.testing.unittestEnabled": false,
     "python.testing.pytestEnabled": true
