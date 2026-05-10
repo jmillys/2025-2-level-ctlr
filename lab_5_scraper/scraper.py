@@ -279,45 +279,40 @@ class Crawler:
         max_articles = self.config.get_num_articles()
         self.urls = []
 
-        author_urls = []
-        for seed_url in seed_urls:
-            try:
-                response = make_request(seed_url, self.config)
-                if response.status_code != 200:
-                    continue
-                soup = BeautifulSoup(response.text, 'html.parser')
-                links = self._extract_url(soup)
-                # Filter: keep only links to author pages (contain /authors/ and end with .htm)
-                for link in links:
-                    if '/authors/' in link and link.endswith('.htm'):
-                        if link not in author_urls:
-                            author_urls.append(link)
-            except Exception:
-                continue
+        # Step 1: Collect ALL links from ALL seed_urls
+        all_pages_to_visit = list(seed_urls)
+        visited_pages = set()
         
-        for author_url in author_urls:
-            if len(self.urls) >= max_articles:
-                break
+        while all_pages_to_visit and len(self.urls) < max_articles:
+            current_url = all_pages_to_visit.pop(0)
+            if current_url in visited_pages:
+                continue
+            visited_pages.add(current_url)
+            
             try:
-                time.sleep(0.1)  # Small delay to be polite
-                response = make_request(author_url, self.config)
+                response = make_request(current_url, self.config)
                 if response.status_code != 200:
                     continue
                 soup = BeautifulSoup(response.text, 'html.parser')
                 links = self._extract_url(soup)
+                
                 for link in links:
-                    if not link.endswith('.txt'):
-                        continue
-                    if link in self.urls:
-                        continue
-                    if len(self.urls) >= max_articles:
-                        break
-                    try:
-                        test_response = make_request(link, self.config)
-                        if test_response.status_code == 200:
-                            self.urls.append(link)
-                    except Exception:
-                        continue
+                    # If it's a book (.txt or .htm with /authors/ path)
+                    if link.endswith('.txt') or '/authors/' in link:
+                        if link.endswith('.htm') or link.endswith('.txt'):
+                            if link not in self.urls and len(self.urls) < max_articles:
+                                try:
+                                    test_response = make_request(link, self.config)
+                                    if test_response.status_code == 200:
+                                        self.urls.append(link)
+                                except Exception:
+                                    continue
+                    
+                    # If it's another page to crawl (not a book)
+                    if link.endswith('.htm') and '/authors/' not in link:
+                        if link not in visited_pages and link not in all_pages_to_visit:
+                            all_pages_to_visit.append(link)
+                            
             except Exception:
                 continue
 
@@ -386,13 +381,21 @@ class HTMLParser:
         Args:
             article_soup (bs4.BeautifulSoup): BeautifulSoup instance
         """
+        for tag in article_soup.find_all(['script', 'style']):
+            tag.decompose()
+
         body = article_soup.find('body')
         if body:
-            for tag in body.find_all(['script', 'style']):
-                tag.decompose()
             text = body.get_text(separator='\n', strip=True)
         else:
             text = article_soup.get_text(separator='\n', strip=True)
+
+        if not text or len(text) < 50:
+            pre_tag = article_soup.find('pre')
+            if pre_tag:
+                text = pre_tag.get_text(separator='\n', strip=True)
+            else:
+                text = article_soup.get_text(separator='\n', strip=True)
 
         self.article.text = text
 
@@ -403,29 +406,41 @@ class HTMLParser:
         Args:
             article_soup (bs4.BeautifulSoup): BeautifulSoup instance
         """
+        text_content = article_soup.get_text(separator='\n', strip=True)
+        lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+
         title_tag = article_soup.find('title')
-        if title_tag and title_tag.string:
+        if title_tag and title_tag.string and title_tag.string.strip():
             title_text = title_tag.string.strip()
             title_text = re.sub(r'^TarraNova\s*[:–—-]\s*', '', title_text)
-            self.article.title = title_text
-        else:
-            for header_tag in article_soup.find_all(['h1', 'h2', 'h3']):
-                if header_tag.get_text(strip=True):
-                    self.article.title = header_tag.get_text(strip=True)
-                    break
-            else:
-                self.article.title = "NOT FOUND"
-        
-        author_found = False
-        author_keywords = ['Автор:', 'Author:', 'Перевод:', 'Переводчик:']
+            if title_text:
+                self.article.title = title_text
 
-        text_content = article_soup.get_text()
+        if not self.article.title:
+            for header_tag in article_soup.find_all(['h1', 'h2', 'h3']):
+                header_text = header_tag.get_text(strip=True)
+                if header_text and len(header_text) > 3:
+                    self.article.title = header_text
+                    break
+        
+        if not self.article.title:
+            for line in lines:
+                if len(line) > 5 and not line.startswith('<') and not line.startswith('http'):
+                    self.article.title = line
+                    break
+
+        if not self.article.title:
+            self.article.title = "NOT FOUND"
+
+        author_found = False
+        author_keywords = ['Автор:', 'Author:', 'Перевод:', 'Переводчик:', '©']
+
         for keyword in author_keywords:
             pattern = re.escape(keyword) + r'\s*(.+?)(?:\n|$)'
             match = re.search(pattern, text_content, re.IGNORECASE)
             if match:
                 author_name = match.group(1).strip()
-                if author_name:
+                if author_name and len(author_name) > 1:
                     self.article.author = [author_name]
                     author_found = True
                     break
@@ -434,10 +449,26 @@ class HTMLParser:
             h1_tags = article_soup.find_all('h1')
             for h1 in h1_tags:
                 h1_text = h1.get_text(strip=True)
-                if h1_text and not re.match(r'^TarraNova', h1_text, re.IGNORECASE):
+                if h1_text and len(h1_text) > 3 and 'TarraNova' not in h1_text:
                     self.article.author = [h1_text]
                     author_found = True
                     break
+
+        if not author_found:
+            for i, line in enumerate(lines):
+                if ('автор' in line.lower() or 'author' in line.lower()) and len(line) < 100:
+                    # Try to extract name from this line or next line
+                    name_match = re.search(r'(?:автор|author)\s*[:–—-]?\s*(.+)', line, re.IGNORECASE)
+                    if name_match and name_match.group(1).strip():
+                        self.article.author = [name_match.group(1).strip()]
+                        author_found = True
+                        break
+                    elif i + 1 < len(lines) and lines[i + 1]:
+                        self.article.author = [lines[i + 1]]
+                        author_found = True
+                        break
+
+        if not author_found:
             self.article.author = ["NOT FOUND"]
 
         self.article.date = datetime.datetime.now()
@@ -502,20 +533,23 @@ def main() -> None:
 
     print(f"Found {len(crawler.urls)} article URLs")
 
-    for i, url in enumerate(crawler.urls, start=1):
-        print(f"Parsing article {i}/{len(crawler.urls)}: {url}")
+    prepare_environment(ASSETS_PATH)
 
-        parser = HTMLParser(full_url=url, article_id=i, config=configuration)
+    saved_count = 0
+    for url in crawler.urls:
+        parser = HTMLParser(full_url=url, article_id=saved_count + 1, config=configuration)
         article = parser.parse()
 
         if article and isinstance(article, Article):
             to_raw(article)
             to_meta(article)
-            print(f"  Saved: {i}_raw.txt and {i}_meta.json")
+            saved_count += 1
+            print(f"  Saved: {saved_count}_raw.txt and {saved_count}_meta.json")
         else:
             print(f"  Failed to parse: {url}")
 
-    print("Scraping completed!")
+    print(f"Scraping completed! Saved {saved_count} articles.")
+
 
 
 if __name__ == "__main__":
