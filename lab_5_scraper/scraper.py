@@ -277,7 +277,7 @@ class Crawler:
 
         all_pages_to_visit = list(seed_urls)
         visited_pages = set()
-        max_pages_to_visit = 50  # Limit crawling depth for CI
+        max_pages_to_visit = 20
         
         while all_pages_to_visit and len(self.urls) < max_articles and len(visited_pages) < max_pages_to_visit:
             current_url = all_pages_to_visit.pop(0)
