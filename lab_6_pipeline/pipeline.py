@@ -1,11 +1,20 @@
 """
 Pipeline for CONLL-U formatting.
 """
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # pylint: disable=too-few-public-methods, unused-import, undefined-variable, too-many-nested-blocks, duplicate-code
+import re
+import sys
 import pathlib
+from typing import Dict
 
 from core_utils.article.article import Article
+from core_utils.article.io import to_cleaned
+from core_utils.constants import ASSETS_PATH
 from core_utils.pipeline import LibraryWrapper, PipelineProtocol, TreeNode
 
 try:
@@ -24,6 +33,16 @@ except ImportError:
     print("No libraries installed. Failed to import.")
 
 
+class InconsistentDatasetError(Exception):
+    """Raised when dataset has inconsistencies."""
+    pass
+
+
+class EmptyDirectoryError(Exception):
+    """Raised when directory is empty."""
+    pass
+
+
 class CorpusManager:
     """
     Work with articles and store them.
@@ -36,18 +55,85 @@ class CorpusManager:
         Args:
             path_to_raw_txt_data (pathlib.Path): Path to raw txt data
         """
-
+        self.path = path_to_raw_txt_data
+        self._storage: Dict[int, Article] = {}
+        self._validate_dataset()
+        self._scan_dataset()
 
 
     def _validate_dataset(self) -> None:
         """
         Validate folder with assets.
+
+        Raises:
+            FileNotFoundError: Path does not exist
+            NotADirectoryError: Path is not a directory
+            EmptyDirectoryError: Directory is empty
+            InconsistentDatasetError: Dataset has inconsistencies
         """
+        if not self.path.exists():
+            raise FileNotFoundError(f"Path does not exist: {self.path}")
+        if not self.path.is_dir():
+            raise NotADirectoryError(f"Path is not a directory: {self.path}")
+        raw_files = {}
+        meta_files = {}
+        
+        for file_path in self.path.iterdir():
+            if file_path.is_file():
+                name = file_path.stem
+                if name.endswith("_raw"):
+                    try:
+                        article_id = int(name.replace("_raw", ""))
+                        raw_files[article_id] = file_path
+                    except ValueError:
+                        continue
+                elif name.endswith("_meta"):
+                    try:
+                        article_id = int(name.replace("_meta", ""))
+                        meta_files[article_id] = file_path
+                    except ValueError:
+                        continue
+        
+        if not raw_files:
+            raise InconsistentDatasetError("No raw files found")
+        
+        if not raw_files and not meta_files:
+            raise EmptyDirectoryError(f"Directory is empty: {self.path}")
+        
+        if set(raw_files.keys()) != set(meta_files.keys()):
+            raise InconsistentDatasetError(
+                f"Mismatch between raw and meta files. "
+                f"Raw IDs: {sorted(raw_files.keys())}, "
+                f"Meta IDs: {sorted(meta_files.keys())}"
+            )
+        
+        article_ids = sorted(raw_files.keys())
+        if article_ids:
+            expected_ids = list(range(1, max(article_ids) + 1))
+            if article_ids != expected_ids:
+                raise InconsistentDatasetError(
+                    f"Article IDs have gaps. "
+                    f"Expected: {expected_ids}, Got: {article_ids}"
+                )
+            
+        for article_id, file_path in raw_files.items():
+            if file_path.stat().st_size == 0:
+                raise InconsistentDatasetError(f"Raw file {article_id} is empty")
+        
+        for article_id, file_path in meta_files.items():
+            if file_path.stat().st_size == 0:
+                raise InconsistentDatasetError(f"Meta file {article_id} is empty")
+
 
     def _scan_dataset(self) -> None:
         """
         Register each dataset entry.
         """
+        for file_path in self.path.iterdir():
+            if file_path.is_file() and file_path.name.endswith("_raw.txt"):
+                article_id = int(file_path.stem.replace("_raw", ""))
+                article = Article(url=None, article_id=article_id)
+                self._storage[article_id] = article
 
     def get_articles(self) -> dict:
         """
@@ -56,6 +142,7 @@ class CorpusManager:
         Returns:
             dict: Storage params
         """
+        return self._storage
 
 
 class TextProcessingPipeline(PipelineProtocol):
@@ -73,11 +160,33 @@ class TextProcessingPipeline(PipelineProtocol):
             corpus_manager (CorpusManager): CorpusManager instance
             analyzer (LibraryWrapper | None, optional): Analyzer instance. Defaults to None.
         """
+        self._corpus = corpus_manager
+        self._analyzer = analyzer
 
     def run(self) -> None:
         """
         Perform basic preprocessing and write processed text to files.
         """
+        articles = self._corpus.get_articles()
+        
+        for article_id, article in articles.items():
+
+            raw_path = self._corpus.path / f"{article_id}_raw.txt"
+            if not raw_path.exists():
+                continue
+            
+            with open(raw_path, 'r', encoding='utf-8') as file:
+                raw_text = file.read()
+
+            cleaned_text = raw_text.lower()
+            cleaned_text = re.sub(r'[^\w\s\n]', '', cleaned_text)
+            cleaned_text = re.sub(r'\s+', ' ', cleaned_text)
+            cleaned_text = cleaned_text.strip()
+
+            cleaned_path = self._corpus.path / f"{article_id}_cleaned.txt"
+            with open(cleaned_path, 'w', encoding='utf-8') as file:
+                file.write(cleaned_text)
+            print(f"Saved: {cleaned_path}")
 
 
 class UDPipeAnalyzer(LibraryWrapper):
@@ -92,6 +201,7 @@ class UDPipeAnalyzer(LibraryWrapper):
         """
         Initialize an instance of the UDPipeAnalyzer class.
         """
+        pass
 
     def _bootstrap(self) -> Language:
         """
@@ -100,6 +210,7 @@ class UDPipeAnalyzer(LibraryWrapper):
         Returns:
             Language: Analyzer instance
         """
+        raise NotImplementedError("UDPipeAnalyzer not implemented for mark 4")
 
     def analyze(self, texts: list[str]) -> list[str]:
         """
@@ -111,6 +222,7 @@ class UDPipeAnalyzer(LibraryWrapper):
         Returns:
             list[str]: List of documents
         """
+        raise NotImplementedError("UDPipeAnalyzer not implemented for mark 4")
 
     def to_conllu(self, article: Article) -> None:
         """
@@ -119,6 +231,7 @@ class UDPipeAnalyzer(LibraryWrapper):
         Args:
             article (Article): Article containing information to save
         """
+        raise NotImplementedError("UDPipeAnalyzer not implemented for mark 4")
 
     def from_conllu(self, article: Article) -> Doc:
         """
@@ -130,6 +243,7 @@ class UDPipeAnalyzer(LibraryWrapper):
         Returns:
             Doc: Document ready for parsing
         """
+        raise NotImplementedError("UDPipeAnalyzer not implemented for mark 4")
 
 
 class POSFrequencyPipeline:
@@ -145,6 +259,7 @@ class POSFrequencyPipeline:
             corpus_manager (CorpusManager): CorpusManager instance
             analyzer (LibraryWrapper): Analyzer instance
         """
+        pass
 
     def _count_frequencies(self, article: Article) -> dict[str, int]:
         """
@@ -156,11 +271,13 @@ class POSFrequencyPipeline:
         Returns:
             dict[str, int]: POS frequencies
         """
+        raise NotImplementedError("POSFrequencyPipeline not implemented for mark 4")
 
     def run(self) -> None:
         """
         Visualize the frequencies of each part of speech.
         """
+        raise NotImplementedError("POSFrequencyPipeline not implemented for mark 4")
 
 
 class PatternSearchPipeline(PipelineProtocol):
@@ -179,6 +296,7 @@ class PatternSearchPipeline(PipelineProtocol):
             analyzer (LibraryWrapper): Analyzer instance
             pos (tuple[str, ...]): Root, Dependency, Child part of speech
         """
+        pass
 
     def _make_graphs(self, doc: Doc) -> list[DiGraph]:
         """
@@ -190,6 +308,7 @@ class PatternSearchPipeline(PipelineProtocol):
         Returns:
             list[DiGraph]: Graphs for the sentences in the document
         """
+        raise NotImplementedError("PatternSearchPipeline not implemented for mark 4")
 
     def _add_children(
         self, graph: DiGraph, subgraph_to_graph: dict, node_id: int, tree_node: TreeNode
@@ -203,6 +322,7 @@ class PatternSearchPipeline(PipelineProtocol):
             node_id (int): ID of root node of the match
             tree_node (TreeNode): Root node of the match
         """
+        raise NotImplementedError("PatternSearchPipeline not implemented for mark 4")
 
     def _find_pattern(self, doc_graphs: list) -> dict[int, list[TreeNode]]:
         """
@@ -214,17 +334,34 @@ class PatternSearchPipeline(PipelineProtocol):
         Returns:
             dict[int, list[TreeNode]]: A dictionary with pattern matches
         """
+        raise NotImplementedError("PatternSearchPipeline not implemented for mark 4")
 
     def run(self) -> None:
         """
         Search for a pattern in documents and writes found information to JSON file.
         """
+        raise NotImplementedError("PatternSearchPipeline not implemented for mark 4")
 
 
 def main() -> None:
     """
     Entrypoint for pipeline module.
     """
+    tmp_articles_path = pathlib.Path(__file__).parent.parent / "tmp" / "articles"
+    
+    if not tmp_articles_path.exists():
+        print(f"Error: tmp/articles folder not found at {tmp_articles_path.absolute()}")
+        sys.exit(1)
+    
+    try:
+        corpus_manager = CorpusManager(tmp_articles_path)
+        pipeline = TextProcessingPipeline(corpus_manager)
+        pipeline.run()
+        
+    except (FileNotFoundError, NotADirectoryError, EmptyDirectoryError, 
+            InconsistentDatasetError) as error:
+        print(f"Error: {error}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
