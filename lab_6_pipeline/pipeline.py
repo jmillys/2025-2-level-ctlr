@@ -9,7 +9,7 @@ import sys
 from typing import Dict
 
 from core_utils.article.article import Article
-from core_utils.article.io import from_raw, to_cleaned, to_raw
+from core_utils.article.io import to_cleaned, to_raw
 from core_utils.constants import ASSETS_PATH
 from core_utils.pipeline import LibraryWrapper, PipelineProtocol, TreeNode
 
@@ -128,7 +128,11 @@ class CorpusManager:
                 article_id = int(file_path.stem.replace("_raw", ""))
                 article = Article(url=None, article_id=article_id)
             
-                article = from_raw(article)
+                raw_path = self.path / f"{article_id}_raw.txt"
+                if raw_path.exists():
+                    with open(raw_path, 'r', encoding='utf-8') as f:
+                        raw_text = f.read()
+                    article.text = raw_text
             
                 self._storage[article_id] = article
 
@@ -168,17 +172,20 @@ class TextProcessingPipeline(PipelineProtocol):
         Perform basic preprocessing and write processed text to files.
         """
         articles = self._corpus.get_articles()
-        
-        for article in articles.values():
+    
+        for article_id, article in articles.items():
             raw_text = article.text
-
+        
             cleaned_text = raw_text.lower()
             cleaned_text = re.sub(r'[^\w\s\n]', '', cleaned_text)
             cleaned_text = re.sub(r'\s+', ' ', cleaned_text)
             cleaned_text = cleaned_text.strip()
-            
-            article.set_cleaned_text(cleaned_text)
-            to_cleaned(article)
+        
+            cleaned_path = self._corpus.path / f"{article_id}_cleaned.txt"
+            with open(cleaned_path, 'w', encoding='utf-8') as f:
+                f.write(cleaned_text)
+        
+            print(f"Saved: {cleaned_path}")
 
 class UDPipeAnalyzer(LibraryWrapper):
     """
