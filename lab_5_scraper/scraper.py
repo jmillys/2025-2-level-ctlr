@@ -245,11 +245,7 @@ class Crawler:
             str: Url from HTML
         """
         href = article_bs.get('href', '').strip()
-        if not href:
-            return ''
-        if href.startswith('#') or href.startswith('javascript:') or href.startswith('mailto:'):
-            return ''
-        if href.startswith('http') and 'tarranova.lib.ru' not in href:
+        if not href or href.startswith(('#', 'javascript:', 'mailto:')):
             return ''
 
         base_url = "https://tarranova.lib.ru"
@@ -257,9 +253,9 @@ class Crawler:
 
         if 'tarranova.lib.ru' not in full_url:
             return ''
-        if full_url.rstrip('/') in ['https://tarranova.lib.ru',
-                                      'https://tarranova.lib.ru/index.html',
-                                      'https://tarranova.lib.ru/index.htm']:
+        if full_url.rstrip('/') in ['https://tarranova.lib.ru', 
+                                    'https://tarranova.lib.ru/index.html',
+                                    'https://tarranova.lib.ru/index.htm']:
             return ''
         if '#' in full_url:
             return ''
@@ -275,16 +271,9 @@ class Crawler:
         max_articles = self.config.get_num_articles()
         self.urls = []
 
-        try:
-            test = requests.get("https://tarranova.lib.ru/", timeout=5)
-            if test.status_code != 200:
-                return
-        except Exception:
-            return
-
         all_pages_to_visit = list(seed_urls)
         visited_pages = set()
-        max_pages_to_visit = 50
+        max_pages_to_visit = 100
 
         while all_pages_to_visit and len(self.urls) < max_articles and len(visited_pages) < max_pages_to_visit:
             current_url = all_pages_to_visit.pop(0)
@@ -296,34 +285,31 @@ class Crawler:
                 response = make_request(current_url, self.config)
                 if response.status_code != 200:
                     continue
-                soup = BeautifulSoup(response.text, 'html.parser')
-                links = []
-                for tag in soup.find_all('a', href=True):
-                    url = self._extract_url(tag)
-                    if url:
-                        links.append(url)
 
-                for link in links:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                for tag in soup.find_all('a', href=True):
                     if len(self.urls) >= max_articles:
                         break
-                    if link.endswith('.txt') or '/authors/' in link:
-                        if link.endswith('.htm') or link.endswith('.txt'):
-                            if link not in self.urls:
-                                try:
-                                    test_response = make_request(link, self.config)
-                                    if test_response.status_code == 200:
-                                        self.urls.append(link)
-                                except Exception:
-                                    continue
+                        
+                    url = self._extract_url(tag)
+                    if not url:
+                        continue
 
-                    if link.endswith('.htm') and '/authors/' not in link:
-                        if link not in visited_pages and link not in all_pages_to_visit:
-                            if len(visited_pages) < max_pages_to_visit:
-                                all_pages_to_visit.append(link)
+                    if url.endswith(('.htm', '.txt')) and url not in self.urls:
+                        try:
+                            test_response = make_request(url, self.config)
+                            if test_response.status_code == 200 and len(test_response.text) > 500:
+                                self.urls.append(url)
+                        except Exception:
+                            continue
+
+                    elif url.endswith('.htm') and '/authors/' not in url and url not in visited_pages:
+                        if len(visited_pages) < max_pages_to_visit:
+                            all_pages_to_visit.append(url)
 
             except Exception:
                 continue
-
         
     def get_search_urls(self) -> list:
         """
@@ -393,17 +379,12 @@ class HTMLParser:
             tag.decompose()
 
         body = article_soup.find('body')
-        if body:
-            text = body.get_text(separator='\n', strip=True)
-        else:
-            text = article_soup.get_text(separator='\n', strip=True)
+        text = body.get_text(separator='\n', strip=True) if body else article_soup.get_text(separator='\n', strip=True)
 
-        if not text or len(text) < 50:
-            pre_tag = article_soup.find('pre')
-            if pre_tag:
-                text = pre_tag.get_text(separator='\n', strip=True)
-            else:
-                text = article_soup.get_text(separator='\n', strip=True)
+        if len(text) < 100:
+            pre = article_soup.find('pre')
+            if pre:
+                text = pre.get_text(separator='\n', strip=True)
 
         self.article.text = text
 
@@ -508,11 +489,9 @@ class HTMLParser:
             soup = BeautifulSoup(response.text, 'html.parser')
             self._fill_article_with_text(soup)
             self._fill_article_with_meta_information(soup)
-
             return self.article
         except Exception:
             return self.article
-
 
 def prepare_environment(base_path: pathlib.Path | str) -> None:
     """
@@ -533,7 +512,6 @@ def main() -> None:
     Entrypoint for scraper module.
     """
     configuration = Config(path_to_config=CRAWLER_CONFIG_PATH)
-
     prepare_environment(ASSETS_PATH)
 
     crawler = Crawler(config=configuration)
@@ -548,13 +526,13 @@ def main() -> None:
         parser = HTMLParser(full_url=url, article_id=saved_count + 1, config=configuration)
         article = parser.parse()
 
-        if article and isinstance(article, Article):
+        if article and article.text and len(article.text) > 100:
             to_raw(article)
             to_meta(article)
             saved_count += 1
-            print(f"  Saved: {saved_count}_raw.txt and {saved_count}_meta.json")
+            print(f"  Saved: {saved_count}")
         else:
-            print(f"  Failed to parse: {url}")
+            print(f"  Failed: {url}")
 
     print(f"Scraping completed! Saved {saved_count} articles.")
 
