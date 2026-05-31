@@ -209,7 +209,7 @@ def make_request(url: str, config: Config) -> requests.models.Response:
     response = requests.get(
         url,
         headers=config.get_headers(),
-        timeout=1,
+        timeout=config.get_timeout(),
         verify=config.get_verify_certificate()
     )
     response.encoding = config.get_encoding()
@@ -503,7 +503,7 @@ class HTMLParser:
         try:
             response = make_request(self.full_url, self.config)
             if response.status_code != 200:
-                return False
+                return self.article
 
             soup = BeautifulSoup(response.text, 'html.parser')
             self._fill_article_with_text(soup)
@@ -511,7 +511,7 @@ class HTMLParser:
 
             return self.article
         except Exception:
-            return False
+            return self.article
 
 
 def prepare_environment(base_path: pathlib.Path | str) -> None:
