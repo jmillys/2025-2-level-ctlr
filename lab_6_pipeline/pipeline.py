@@ -9,7 +9,7 @@ import sys
 from typing import Dict
 
 from core_utils.article.article import Article
-from core_utils.article.io import from_raw, to_cleaned
+from core_utils.article.io import from_raw, to_cleaned, to_raw
 from core_utils.constants import ASSETS_PATH
 from core_utils.pipeline import LibraryWrapper, PipelineProtocol, TreeNode
 
@@ -162,17 +162,17 @@ class TextProcessingPipeline(PipelineProtocol):
         Perform basic preprocessing and write processed text to files.
         """
         articles = self._corpus.get_articles()
-        
+    
         for article_id, article in articles.items():
-            from_raw(article)
-            
-            raw_text = article.text
-            
+            raw_path = self._corpus.path / f"{article_id}_raw.txt"
+            with open(raw_path, 'r', encoding='utf-8') as f:
+                raw_text = f.read()
+        
             cleaned_text = raw_text.lower()
             cleaned_text = re.sub(r'[^\w\s\n]', '', cleaned_text)
             cleaned_text = re.sub(r'\s+', ' ', cleaned_text)
             cleaned_text = cleaned_text.strip()
-            
+        
             article.set_cleaned_text(cleaned_text)
             to_cleaned(article)
 
